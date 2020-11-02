@@ -1,4 +1,5 @@
 using LinearAlgebra
+using Plots
 
 D = 2
 N = 81
@@ -106,9 +107,19 @@ function particle_grid_indices(pos::Array{Float64, 1}, grid::Grid)::Matrix{Int}
     kinds = kernel_indices(indices, size(grid.position)[2:end])
 end
 
+# inds should be matrix of coordinates where each column
+# i a set of cartesian indices
+function subset_array(array::Array{Float64, D+1}, inds::Matrix{Int})
+    sub = [array[:,inds[:,i]...] for i=1:size(inds,2)]
+    sub = hcat(sub...)
+end
+
 function grid_subset(grid::Grid, grid_inds::Matrix{Int})::Array{Float64, 2}
-    grid_poses = [grid.position[:,grid_inds[:,i]...] for i=1:size(grid_inds,2)]
-    grid_poses = hcat(grid_poses...)
+    subset_array(grid.position, grid_inds)
+end
+
+function grid_subset_vel(grid::Grid, grid_inds::Matrix{Int})::Array{Float64, 2}
+    subset_array(grid.velocity, grid_inds)
 end
 
 function particle_weights_unreduced(pos::VectorF, grid_poses::PosArray, h::Float64, func)
@@ -216,21 +227,71 @@ function apply_grid_forces!(grid, grid_forces::Array{Float64, D+1}, dt::Float64)
     grid.momentum[nzm_3d] = mass_nd .* grid.velocity[nzm_3d]
 end
 
-function g2p!(grid::Grid, particles::Particles)
+function update_deforamtion_gradient(F::Matrix{Float64}, w_grad::Matrix{Float64}, grid_inds::Matrix{Int}, grid::Grid, dt::Float64)
+    coeff = zeros(size(F))
+    vw_sum = zeros(D,D)
+    for i=1:size(grid_inds,2)
+        v = grid.velocity[:,grid_inds[:,i]...]
+        w_grad_i = w_grad[:,i]
+        vw_sum += reshape(v,(D,1)) * w_grad_i'
+    end
+    vw_sum = vw_sum .* dt
+    inner = Matrix(I, 2,2) + vw_sum
+    inner * F
+end
+
+function update_particle_vel(vel::VectorF, w::VectorF,  grid_inds::Matrix{Int}, grid::Grid, alpha::Float64)
+    g_vels = grid_subset_vel(grid, grid_inds)
+    w_temp = reshape(w,(1,size(w,1)))
+    lhs_sum = sum(g_vels .* w_temp, dims=2)
+    rhs_sum = sum((g_vels .- vel) .* w_temp, dims=2)
+    rhs_sum += vel
+    (1 - alpha) .* lhs_sum + alpha .* rhs_sum
+end
+
+function update_particle_pos(pos::VectorF, w::VectorF, grid_inds::Matrix{Int}, grid::Grid, dt::Float64)
+    grid_vel = grid_subset_vel(grid, grid_inds)
+    new_pos = pos .+ dt .* sum(grid_vel .* reshape(w,(1,size(w,1))),dims=2)
+end
+
+function g2p!(grid::Grid, particles::Particles, dt::Float64)
     plen = size(particles.mass,1)
     for i=1:plen
-
+        w = particles.w[i]
+        w_grad = particles.w_grad[i]
+        grid_inds = particles.grid_inds[i]
+        F = particles.F[:,:,i]
+        pos = particles.position[:,i]
+        vel = particles.velocity[:,i]
+        particles.F[:,:,i] = update_deforamtion_gradient(F, w_grad, grid_inds, grid, dt)
+        particles.velocity[:,i] = update_particle_vel(vel, w, grid_inds, grid, .95)
+        particles.position[:,i] = update_particle_pos(pos, w, grid_inds, grid, dt)
     end
 end
 
 function timestep(particles, grid, dt::Float64)
     p2g!(particles, grid)
-    grid_forces = ones(grid.momentum) .* 9.8
+    grid_forces = zeros(size(grid.momentum))
+    grid_forces[end,:,:] = ones(size(grid.mass)) .* -9.8
+    apply_grid_forces!(grid, grid_forces, dt)
+    g2p!(grid, particles, dt)
+end
 
+function plot_sim(particles::Particles, grid::Grid)
+    min_ex = grid.position[:,1,1]
+    max_ex = grid.position[:,end,end]
+    x = particles.position[1,:]
+    y = particles.position[2,:]
+    scatter(x, y)
+    xlims!((min_ex[1],max_ex[1]))
+    ylims!((min_ex[2],max_ex[2]))
 end
 
 particles = get_box_particles(1e-5, 500, [5.0, 5.0])
 grid = generate_grid(0.0, 10.0, 101)
-p2g!(particles, grid)
-grid_forces = ones(size(grid.momentum)) .* 9.8
-apply_grid_forces!(grid, grid_forces, .01)
+plot_sim(particles,grid)
+timestep(particles, grid, 0.01)
+for i=1:100
+    timestep(particles, grid, 0.01)
+end
+plot_sim(particles,grid)
