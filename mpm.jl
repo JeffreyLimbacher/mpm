@@ -174,10 +174,63 @@ function p2g!(particles::Particles, grid::Grid)
     end
     # Hack
     nan_inds = isnan.(grid.velocity)
-    grid.velocity[nan_inds] .= 0.0
-    return
+    grid.velocity[nan_inds] .= 0.
+end
+
+function neohookean(F::Matrix{Float64}, E::Float64, poisson::Float64)
+    v = poisson
+    mu = E / (2.0 * (1.0 + v))
+    lambda = E * v / (1 + v) / (1 - 2 * v)
+    FF = F' * F
+    F_t = inv(F')
+    J = det(F)
+    logJ = log(J)
+    den_energy = mu*(tr(FF) - D) - mu * J + lambda / 2 * logJ ^ 2
+    P = mu .* (F - F_t) + lambda * logJ * F_t
+    cauchy = 1 / J .* P * F'
+end
+
+function apply_boundary!(grid::Grid)
+    # set boundaries to zero for now
+
+    grid.momentum[1,[1, end],:] = -grid.momentum[1,[1, end],:]
+    grid.momentum[2,:,[1, end]] = -grid.momentum[2,:,[1, end]]
+end
+
+function mass_bool_to_vec_bool(mass_mask::BitArray{D})::BitArray{D+1}
+    out = BitArray(undef, (D, size(mass_mask)...))
+    colons = (Colon() for i=1:D)
+    for i = 1:D
+        out[i,colons...] = mass_mask
+    end
+    return out
+end
+
+function apply_grid_forces!(grid, grid_forces::Array{Float64, D+1}, dt::Float64)
+    nzm = grid.mass .!= 0.0
+    nzm_3d = mass_bool_to_vec_bool(grid.mass .!= 0.0)
+    mass_nd = repeat(grid.mass[nzm],inner=D)
+    vel_update = dt .* grid_forces[nzm_3d] ./ mass_nd
+    grid.velocity[nzm_3d] += dt * vel_update
+    apply_boundary!(grid)
+    grid.momentum[nzm_3d] = mass_nd .* grid.velocity[nzm_3d]
+end
+
+function g2p!(grid::Grid, particles::Particles)
+    plen = size(particles.mass,1)
+    for i=1:plen
+
+    end
+end
+
+function timestep(particles, grid, dt::Float64)
+    p2g!(particles, grid)
+    grid_forces = ones(grid.momentum) .* 9.8
+
 end
 
 particles = get_box_particles(1e-5, 500, [5.0, 5.0])
 grid = generate_grid(0.0, 10.0, 101)
 p2g!(particles, grid)
+grid_forces = ones(size(grid.momentum)) .* 9.8
+apply_grid_forces!(grid, grid_forces, .01)
