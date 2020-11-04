@@ -249,9 +249,17 @@ function update_particle_vel(vel::VectorF, w::VectorF,  grid_inds::Matrix{Int}, 
     (1 - alpha) .* lhs_sum + alpha .* rhs_sum
 end
 
+# Returns D x 2 matrix where columns are min/max corners
+function grid_extents(grid::Grid)::Matrix{Float64}
+    hcat(grid.position[:,1,1], grid.position[:,end,end])
+end
+
 function update_particle_pos(pos::VectorF, w::VectorF, grid_inds::Matrix{Int}, grid::Grid, dt::Float64)
     grid_vel = grid_subset_vel(grid, grid_inds)
     new_pos = pos .+ dt .* sum(grid_vel .* reshape(w,(1,size(w,1))),dims=2)
+    # bound position by extents of grid
+    ext = grid_extents(grid)
+    new_pos = max.(min.(new_pos, ext[:,end]), ext[:, 1])
 end
 
 function g2p!(grid::Grid, particles::Particles, dt::Float64)
@@ -272,12 +280,12 @@ end
 function timestep(particles, grid, dt::Float64)
     p2g!(particles, grid)
     grid_forces = zeros(size(grid.momentum))
-    grid_forces[end,:,:] = ones(size(grid.mass)) .* -9.8
+    grid_forces[end,:,:] = ones(size(grid.mass)) .* grid.mass .* -1.
     apply_grid_forces!(grid, grid_forces, dt)
     g2p!(grid, particles, dt)
 end
 
-function plot_sim(particles::Particles, grid::Grid)
+@recipe function plot_sim(particles::Particles, grid::Grid)
     min_ex = grid.position[:,1,1]
     max_ex = grid.position[:,end,end]
     x = particles.position[1,:]
@@ -289,9 +297,9 @@ end
 
 particles = get_box_particles(1e-5, 500, [5.0, 5.0])
 grid = generate_grid(0.0, 10.0, 101)
-plot_sim(particles,grid)
-timestep(particles, grid, 0.01)
-for i=1:100
-    timestep(particles, grid, 0.01)
+
+anim = @animate for i=1:100
+    timestep(particles, grid, 0.05)
+    plot_sim(particles,grid)
 end
-plot_sim(particles,grid)
+gif(anim, "anim.gif", fps = 15)
