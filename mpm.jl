@@ -1,8 +1,7 @@
 using LinearAlgebra
 using Plots
 
-D = 2
-N = 81
+const D = 2
 
 VectorF = Vector{Float64}
 PosArray = Array{Float64, 2}
@@ -71,7 +70,14 @@ function add_box(
     center::Vector{Float64} = zeros(D),
     extents::Vector{Float64} = ones(D),
 )::Array{Float64, 2}
-    (rand(Float64, (D, n)) .- 0.5) .* extents .+ center
+    #(rand(Float64, (D, n)) .- 0.5) .* extents .+ center
+    n_ex = Int(floor(n.^(1. / D)))
+    min_ext = center - extents ./ 2
+    max_ext = center + extents ./ 2
+    ranges = (LinRange(min_ext[i], max_ext[i], n_ex) for i=1:D)
+    arr = [Iterators.flatten([[x...] for x in Iterators.product(ranges...)])...]
+    final_len = Int(floor(size(arr,1)/D))
+    points = reshape(arr, (D, final_len))
 end
 
 function kernel(x)
@@ -86,12 +92,14 @@ end
 
 function dkernel(x)
     xabs = abs(x)
+    o = 0
     if(xabs < 1)
-        o = 3.0/2.0 * xabs^2.0
-    else
+        o = 0.5 * x * (xabs * 3. - 4.)
+    elseif(xabs < 2)
         o = -0.5 *(2-xabs)^2.0
+        o = sign(x) * o
     end
-    o = sign(x) * o
+    o
 end
 
 
@@ -176,11 +184,11 @@ end
 function p2g!(particles::Particles, grid::Grid)
     plen = size(particles.mass,1)
     h = grid.h
-    grid.mass = zeros(size(grid.mass))
-    grid.momentum = zeros(size(grid.momentum))
-    grid.velocity = zeros(size(grid.velocity))
+    grid.mass .= 0
+    grid.momentum .= 0
+    grid.velocity .= 0
+    generate_weights!(particles, grid)
     for i = 1:plen
-        generate_weights!(particles, grid)
         pos = particles.position[:,i]
         grid_inds = particles.grid_inds[i]
         N_i = particles.w[i]
@@ -208,9 +216,9 @@ function neohookean(F::Matrix{Float64}, mu::Float64, lambda::Float64)
     J = det(F)
     logJ = log(J)
     den_energy = mu*(tr(FF) - D) - mu * J + lambda / 2 * logJ ^ 2
-    P = mu .* (F - F_t) + lambda * logJ * F_t
+    # P = mu .* (F - F_t) + lambda * logJ * F_t
+    P = mu .* F + (lambda * logJ - mu) .* F_t
     cauchy = 1. / J .* P * F'
-    println(cauchy)
     cauchy
 end
 
@@ -231,17 +239,23 @@ function mass_bool_to_vec_bool(mass_mask::BitArray{D})::BitArray{D+1}
 end
 
 function apply_grid_forces!(grid, grid_forces::Array{Float64, D+1}, dt::Float64)
-    nzm = grid.mass .!= 0.0
-    nzm_3d = mass_bool_to_vec_bool(grid.mass .!= 0.0)
-    mass_nd = repeat(grid.mass[nzm],inner=D)
-    vel_update = dt .* grid_forces[nzm_3d] ./ mass_nd
-    grid.velocity[nzm_3d] += dt * vel_update
+    # println("max before grid_forces ",maximum(abs.(grid.velocity)))
+    for ind in CartesianIndices(grid.mass)
+        if(grid.mass[ind] == 0.)
+            continue
+        end
+
+        m = grid.mass[ind]
+        f = grid_forces[:,ind]
+        dv_dt = f ./ m .* dt
+        dv_dt[end] += -dt
+        grid.velocity[:,ind] += dv_dt
+    end
     apply_boundary!(grid)
-    grid.momentum[nzm_3d] = mass_nd .* grid.velocity[nzm_3d]
+    # println("max after grid_forces ",maximum(abs.(grid.velocity)), " " , findmax(abs.(grid.velocity)))
 end
 
 function update_deformation_gradient(F::Matrix{Float64}, w_grad::Matrix{Float64}, grid_inds::Matrix{Int}, grid::Grid, dt::Float64)
-    coeff = zeros(size(F))
     vw_sum = zeros(D,D)
     for i=1:size(grid_inds,2)
         v = grid.velocity[:,grid_inds[:,i]...]
@@ -250,16 +264,21 @@ function update_deformation_gradient(F::Matrix{Float64}, w_grad::Matrix{Float64}
     end
     vw_sum = vw_sum .* dt
     inner = Matrix(I, 2,2) + vw_sum
-    inner * F
+    if(det(inner * F) < 1e-5)
+        # println("Begin print")
+        # println(vw_sum)
+        # println(w_grad)
+        # for i=1:size(grid_inds,2)
+        #     println(grid.velocity[:,grid_inds[:,i]...])
+        # end
+        # println("end print")
+    end
+    F_new = inner * F
 end
 
 function update_particle_vel(vel::VectorF, w::VectorF,  grid_inds::Matrix{Int}, grid::Grid, alpha::Float64)
     g_vels = grid_subset_vel(grid, grid_inds)
-    w_temp = reshape(w,(1,size(w,1)))
-    lhs_sum = sum(g_vels .* w_temp, dims=2)
-    rhs_sum = sum((g_vels .- vel) .* w_temp, dims=2)
-    rhs_sum += vel
-    (1 - alpha) .* lhs_sum + alpha .* rhs_sum
+    v_p = sum(g_vels * w,dims=2)
 end
 
 # Returns D x 2 matrix where columns are min/max corners
@@ -267,12 +286,11 @@ function grid_extents(grid::Grid)::Matrix{Float64}
     hcat(grid.position[:,1,1], grid.position[:,end,end])
 end
 
-function update_particle_pos(pos::VectorF, w::VectorF, grid_inds::Matrix{Int}, grid::Grid, dt::Float64)
-    grid_vel = grid_subset_vel(grid, grid_inds)
-    new_pos = pos .+ dt .* sum(grid_vel .* reshape(w,(1,size(w,1))),dims=2)
+function update_particle_pos(pos::VectorF, vel::VectorF, dt::Float64, grid::Grid)
+    pos += vel .* dt
     # bound position by extents of grid
     ext = grid_extents(grid)
-    new_pos = max.(min.(new_pos, ext[:,end]), ext[:, 1])
+    new_pos = max.(min.(pos, ext[:,end]), ext[:, 1])
 end
 
 function g2p!(grid::Grid, particles::Particles, dt::Float64)
@@ -284,25 +302,36 @@ function g2p!(grid::Grid, particles::Particles, dt::Float64)
         F = particles.F[:,:,i]
         pos = particles.position[:,i]
         vel = particles.velocity[:,i]
-        particles.F[:,:,i] = update_deformation_gradient(F, w_grad, grid_inds, grid, dt)
         particles.velocity[:,i] = update_particle_vel(vel, w, grid_inds, grid, .95)
-        particles.position[:,i] = update_particle_pos(pos, w, grid_inds, grid, dt)
+        particles.F[:,:,i] = update_deformation_gradient(F, w_grad, grid_inds, grid, dt)
+        particles.position[:,i] = update_particle_pos(pos, particles.velocity[:,i], dt, grid)
     end
-    pvol!(particles,grid)
 end
 
 function calculate_forces(particles, grid, dt::Float64)::Array{Float64, D+1}
     grid_forces = zeros(size(grid.momentum))
-    grid_forces[end,:,:] = ones(size(grid.mass)) .* grid.mass .* -1.
+    #grid_forces[end,:,:] = ones(size(grid.mass)) .* grid.mass .* -1.
 
-    # Get the stress based forces
-
+    # Get the stress based force
     for i=1:size(particles.mass,1)
-        c = neohookean(particles.F[:,:,i], 20., 10.)
+        c = neohookean(particles.F[:,:,i], 1., 10.)
         grid_inds = particles.grid_inds[i]
         w_grad = particles.w_grad[i]
+        w = particles.w[i]
+        J = det(particles.F[i])
         for j=1:size(grid_inds,2)
-            grid_forces[:,grid_inds[:,j]...] += c * w_grad[:,j] .* particles.volume[i]
+            grid_forces[:,grid_inds[:,j]...] += c * w_grad[:,j] .* particles.volume[i] .* J
+            if(grid_inds[:,j] == [4, 8])
+                # println("begin print")
+                # println("C",c)
+                # println("F", particles.F[:,:,i])
+                # println("w_grad", w_grad[:,j] )
+                # println("vol", particles.volume[i])
+                # println("J", J)
+                # println("f", grid_forces[:,grid_inds[:,j]...])
+                # #println(c * w_grad[:,j] .* particles.volume[i]  .* w[j] .* J, particles.w[i][j], " " , grid.mass[grid_inds[:,j]...])
+                # println("end")
+            end
         end
     end
     grid_forces
@@ -314,10 +343,9 @@ function pvol!(particles::Particles, grid::Grid)
     for i=1:plen
         grid_inds = particles.grid_inds[i]
         masses = [grid.mass[grid_inds[:,i]...] for i=1:size(grid_inds,2)]
-        masses = masses ./ grid.h.^D
         w = particles.w[i]
         rho_p = sum(w.*masses)
-        particles.volume[i] = rho_p * particles.mass[i]
+        particles.volume[i] = particles.mass[i] ./ rho_p .* grid.h.^D
     end
 end
 
@@ -338,11 +366,17 @@ function plot_sim(particles::Particles, grid::Grid)
     ylims!((min_ex[2],max_ex[2]))
 end
 
-particles = get_box_particles(1e-5, 200, [1.0, 1.0])
-grid = generate_grid(0.0, 10.0, 101)
+particles = get_box_particles(1e-2, 25^D, [1., 0.6])
+particles.velocity[1,226:250] .+= 100.
+grid = generate_grid(0.0, 2.0, 21)
 generate_weights!(particles, grid)
+p2g!(particles, grid)
 pvol!(particles, grid)
-anim = @gif for i=1:2
-    timestep(particles, grid, 0.05)
+anim = @gif for i=1:250
+# for i = 1:100
     plot_sim(particles,grid)
-end
+    if(i%5 == 0)
+        println(i)
+    end
+    timestep(particles, grid, 0.001)
+end every 5
