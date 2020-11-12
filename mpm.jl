@@ -345,10 +345,11 @@ function plot_sim(particles::Particles, grid::Grid)
     ylims!((min_ex[2],max_ex[2]))
 end
 
-particles = get_box_particles(1e-2, 25^D, [1., 0.6])
-particles.velocity[1,24*25+1:25*25] .+= 25.
-particles.velocity[1,1:25] .+= -25.
-grid = generate_grid(0.0, 2.0, 21)
+N = 30
+particles = get_box_particles(1e-2, N^D, [1., 0.6])
+particles.velocity[1,(N-1)*N+1:N*N] .+= 10.
+particles.velocity[1,1:N] .+= -10.
+grid = generate_grid(0.0, 2.0, 41)
 generate_weights!(particles, grid)
 p2g!(particles, grid)
 pvol!(particles, grid)
@@ -358,5 +359,5 @@ anim = @gif for i=1:100
     if(i%5 == 0)
         println(i)
     end
-    @time timestep(particles, grid, 0.0001)
-end every 1
+    @time timestep(particles, grid, 0.0005)
+end every 10
