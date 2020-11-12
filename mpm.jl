@@ -297,6 +297,7 @@ end
 
 function calculate_forces(particles, grid, dt::Float64)::Array{Float64, D+1}
     grid_forces = zeros(size(grid.momentum))
+    grid_forces[end,:,:] = grid.mass .* -100.
     # Get the stress based force
     # C is {{2, 2}, N} array here
     c = neohookean.(eachslice(particles.F, dims=3), 1e4, 0.2)
@@ -345,17 +346,17 @@ function plot_sim(particles::Particles, grid::Grid)
 end
 
 particles = get_box_particles(1e-2, 25^D, [1., 0.6])
-particles.velocity[1,24*25+1:25*25] .+= 10.
-particles.velocity[1,1:25] .+= -10.
+particles.velocity[1,24*25+1:25*25] .+= 25.
+particles.velocity[1,1:25] .+= -25.
 grid = generate_grid(0.0, 2.0, 21)
 generate_weights!(particles, grid)
 p2g!(particles, grid)
 pvol!(particles, grid)
-anim = @gif for i=1:1000
+anim = @gif for i=1:100
 # for i = 1:100
     plot_sim(particles,grid)
     if(i%5 == 0)
         println(i)
     end
     @time timestep(particles, grid, 0.0001)
-end every 5
+end every 1
