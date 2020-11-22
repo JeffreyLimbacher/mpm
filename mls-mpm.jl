@@ -28,6 +28,21 @@ mutable struct Particles
     grid_inds::Vector{Vector{CartesianIndex}} # grid nodes that are neighbors
 end
 
+
+function combine_particles(a::Particles, b::Particles)
+    Particles(
+        lcat(a.mass, b.mass),
+        lcat(a.volume, b.volume),
+        lcat(a.position, b.position),
+        lcat(a.velocity, b.velocity),
+        lcat(a.B, b.B),
+        lcat(a.F, b.F),
+        lcat(a.w, b.w),
+        lcat(a.w_grad, b.w_grad),
+        lcat(a.grid_inds, b.grid_inds)
+    )
+end
+
 function generate_grid(start, stop, len::Int)
     # Kind of complicated way to generate multidimensional points
     lenD = ((len for i=1:D)...,)
@@ -371,19 +386,26 @@ function plot_sim(particles::Particles, grid::Grid)
     ylims!((min_ex[2],max_ex[2]))
 end
 
+function lcat(a, b)
+    cat(a, b, dims=length(size(a)))
+end
+
+
 N = 10
-particles = get_box_particles(1., N^D, [0.5, 0.1], [0.2, 0.2])
-particles.velocity[2,(N-1)*N+1:N*N] .+= -0.
-particles.velocity[2,:] .+= -2.
-grid = generate_grid(0.0, 1.0, 21)
+particles = get_box_particles(100., N^D, [0.5, 0.1], [0.2, 0.2])
+p1 = get_box_particles(1., N^D, [0.4, 0.31], [0.2, 0.2])
+p1.velocity[2,:] .+= -.1
+particles = combine_particles(particles, p1)
+#particles.velocity[2,:] .+= -2.
+grid = generate_grid(0.0, 1.0, 41)
 generate_weights!(particles, grid)
 p2g!(particles, grid)
 pvol!(particles, grid)
-anim = @gif for i=1:800
+anim = @gif for i=1:474
 # for i = 1:100
     plot_sim(particles,grid)
     if(i%5 == 0)
         println(i)
     end
-    @time timestep(particles, grid, 0.0001)
-end every 10
+    @time timestep(particles, grid, 0.0005)
+end every 5
